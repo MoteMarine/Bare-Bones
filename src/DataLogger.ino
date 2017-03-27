@@ -6,7 +6,6 @@
 #include <SD.h>
 
 #define SD_PIN 15
-
 const int timeZone = -4;
 static const char ntpServerName[] = "us.pool.ntp.org";
 Adafruit_MCP9808 temperatureSensor = Adafruit_MCP9808();
@@ -17,17 +16,23 @@ WiFiUDP Udp;
 
 struct configs {
   int number;
-  String values;
+  int model;
+  int serial;
+  String location;
+  float lat;
+  float lon;
+  float timeout;
   String file;
   String date;
   String time;
 };
-struct configs configuration; 
+
+struct configs configuration;
 
 void setup() {
   Serial.begin(115200);
 
-  WiFiMulti.addAP("NSA Surveillance Van", "O3fntvrpDc9GDI1NkIKxH");
+  WiFiMulti.addAP("", "");
   while (WiFiMulti.run() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
@@ -51,65 +56,70 @@ void setup() {
 
 void loop() {
   if (connectedToHost()) {
+    getDateAndTime(&configuration);
     String temperature = String(askForTemperature(configuration.number));
-    String data = createDataString(temperature, &configuration);
-    writeDataToDisk(configuration.file, data);
-    String csv[10];
-    splitCSV(String(configuration.values + data), csv);
-    String json = buildJSON(csv);
-    sendToClient(json);
-    Client.stop();
-    float time = csv[5].toFloat() * 60 * 1000;
-    delay(time);
+    String json = buildJSON(temperature, &configuration);
+    updateReading(&configuration, json);
+    cycleOff(configuration.timeout);
   }
 }
 
-struct configs setConfigVariables() {
-  struct configs currentConfigs;
-  File configFile = SD.open("_config.txt");
-  if (configFile) {
-    while (configFile.available()) {
-      currentConfigs.number = configFile.readStringUntil(',').toInt();
-      String configVariables = configFile.readStringUntil('\n');
-      configVariables.trim();
-      currentConfigs.values = configVariables;
-      break;
-    }
-    configFile.close();
+float askForTemperature(int numberOfReadings) {
+  double sum = 0;
+  for (int readingIndex = 0; readingIndex < numberOfReadings; readingIndex++) {
+    double reading = readTemperature();
+    sum = (sum + reading);
+    readingIndex = reading == 0.00 ? readingIndex-- : readingIndex;
+  }
+  double average = sum / numberOfReadings;
+  delay(15);
+  return average;
+}
+
+double readTemperature() {
+  temperatureSensor.shutdown_wake(0);
+  delay(250);
+  double temperature = temperatureSensor.readTempC();
+  temperatureSensor.shutdown_wake(1);
+  return temperature;
+}
+
+void updateReading(struct configs* configuration, String data) {
+  writeDataToDisk(configuration->file, data);
+  Client.print(data);
+}
+
+void cycleOff(float timeout) {
+  Client.stop();
+  delay(timeout * 60 * 1000);
+  //ESP.deepSleep(timeout * 60 * 1000);
+}
+
+void writeDataToDisk(String fileName, String dataString) {
+  File dataFile = SD.open(fileName, FILE_WRITE);
+  if (dataFile) {
+    dataFile.println(dataString);
+    dataFile.close();
   } else {
-    Serial.println("error opening _config.txt");
+    Serial.print("error opening " + fileName);
   }
-  return currentConfigs;
 }
 
-void splitCSV(String dataCSV, String * data) {
-  char holder[dataCSV.length() + 1];
-  dataCSV.toCharArray(holder, dataCSV.length() + 1);
-  int counter = 0;
-  int prev = 0;
-  for (int i = 0; i <= dataCSV.length() + 1; i++) {
-    if (holder[i] == ',') {
-      data[counter] = dataCSV.substring(prev, i);
-      prev = i + 1;
-      counter++;
-    }
-  }
-}
-String buildJSON (String* data) {
+String buildJSON (String data, struct configs* configuration) {
   StaticJsonBuffer<375> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
   JsonObject& systems = jsonBuffer.createObject();
   JsonObject& sensors = jsonBuffer.createObject();
   JsonObject& gps = jsonBuffer.createObject();
 
-  systems["ModelNumber"] = data[0].toInt();
-  systems["SerialNumber"] = data[1].toInt();
-  systems["Location"] = data[2];
-  gps["Lat"] = data[3].toFloat();
-  gps["Lon"] = data[4].toFloat();
-  systems["Date"] = data[6];
-  systems["Time"] = data[7];
-  sensors["Water_Temperature"] = data[8].toFloat();
+  systems["ModelNumber"] = configuration->model;
+  systems["SerialNumber"] = configuration->serial;
+  systems["Location"] = configuration->location;
+  gps["Lat"] = configuration->lat;
+  gps["Lon"] = configuration->lon;
+  systems["Date"] = configuration->date;
+  systems["Time"] = configuration->time;
+  sensors["Water_Temperature"] = data;
 
   JsonArray& System = root.createNestedArray("System");
   JsonArray& GPS = systems.createNestedArray("GPS");
@@ -128,45 +138,36 @@ String buildJSON (String* data) {
   return jsonString;
 }
 
+struct configs setConfigVariables() {
+  struct configs currentConfigs;
+  File configFile = SD.open("_config.txt");
+  const size_t bufferSize = JSON_OBJECT_SIZE(7) + 130;
+  DynamicJsonBuffer configBuffer(bufferSize);
+  char charBuffer[bufferSize];
 
-float askForTemperature(int numberOfReadings) {
-  temperatureSensor.shutdown_wake(0);
-  delay(250);
-  float c = temperatureSensor.readTempC();
-  float f = c * 9.0 / 5.0 + 32;
-  temperatureSensor.shutdown_wake(1);
-  return f;
-}
-
-void writeDataToDisk(String fileName, String dataString) {
-  File dataFile = SD.open(fileName, FILE_WRITE);
-  if (dataFile) {
-    dataFile.println(dataString);
-    dataFile.close();
+  if (configFile.available()) {
+    String configVariables = configFile.readStringUntil('\n');
+    configVariables.trim();
+    configVariables.toCharArray(charBuffer, bufferSize);
+    JsonObject& root = configBuffer.parseObject(configVariables);
+    currentConfigs.lat = root["Latitude"].as<float>();
+    currentConfigs.lon = root["Longitude"].as<float>();
+    currentConfigs.model = root["ModelNumber"].as<int>();
+    currentConfigs.serial = root["SerialNumber"].as<int>();
+    currentConfigs.location = root["Location"].as<String>();
+    currentConfigs.timeout = root["DelayTime"].as<float>();
+    currentConfigs.number = root["NumberOfReadings"];
+    configFile.close();
   } else {
-    Serial.print("error opening " + fileName);
+    Serial.println("error opening _config.txt");
   }
+  return currentConfigs;
 }
 
-
-boolean connectedToHost() {
-  const char * host = "clouddev.mote.org";
-  const uint16_t port = 4001;
-  while (!Client.connect(host, port)) {
-    delay(5000);
-    Serial.print(".");
-  }
-  return true;
-}
-
-void sendToClient(String data) {
-  Client.print(data);
-}
-
-String createDataString(String data, struct configs* configuration) {
-  getDateAndTime(configuration);
-  String dataString = String(configuration->date + "," + configuration->time + "," + data + ",");
-  return dataString;
+void getDateAndTime(struct configs* configuration) {
+  configuration->file = (String(month()) + "_" + String(year()) + ".txt");
+  configuration->date = (String(month()) + "/" + String(day()) + "/" + String(year()));
+  configuration->time =  (String(hour()) + ":" + String(minute()) + ":" + String(second()));
 }
 
 const int NTP_PACKET_SIZE = 48;
@@ -214,12 +215,12 @@ void sendNTPpacket(IPAddress &address) {
   Udp.endPacket();
 }
 
-void getDateAndTime(struct configs* configuration) {
-  String fileName = (String(month()) + "_" + String(year()) + ".txt");
-  String date = (String(month()) + "/" + String(day()) + "/" + String(year()));
-  String time =  (String(hour()) + ":" + String(minute()) + ":" + String(second()));
-  configuration->file = fileName;
-  configuration->date = date;
-  configuration->time = time;
+boolean connectedToHost() {
+  const char * host = "clouddev.mote.org";
+  const uint16_t port = 4001;
+  while (!Client.connect(host, port)) {
+    delay(5000);
+    Serial.print(".");
+  }
+  return true;
 }
-

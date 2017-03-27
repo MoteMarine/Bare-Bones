@@ -1,7 +1,7 @@
 # bare-bones
 
 
-![banner]()
+![banner](./img/logo.png)
 
 
 TODO: Put more badges here.

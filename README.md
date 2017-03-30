@@ -1,11 +1,15 @@
 # bare-bones
 
-
 ![banner](./img/logo.png)
 
 > Single-file, JSON based datalogger
 
-TODO: Fill out this long description.
+The previous datalogger build had three microcontrollers that held separate
+roles. This system combines those three into one and eliminates the need for an RTC
+because we assume the builds will be networked when installed.
+
+Likewise, this system moves from a CSV configuration to a JSON one. Now communication,
+both local and remote, will be standardized.
 
 ## Table of Contents
 
@@ -15,7 +19,13 @@ TODO: Fill out this long description.
 - [Contribute](#contribute)
 - [License](#license)
 
-## Background
+## Parts
+
+```
+Huzzah ESP8266
+Micro SD breakout
+MCP9808
+```
 
 ## Install
 
@@ -36,8 +46,6 @@ measurements to the configured host.
 ## Contribute
 
 PRs accepted.
-
-Small note: If editing the README, please conform to the [standard-readme](https://github.com/RichardLitt/standard-readme) specification.
 
 ## License
 

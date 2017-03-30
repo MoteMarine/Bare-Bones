@@ -4,16 +4,17 @@
 
 > Single-file, JSON based datalogger
 
-The previous datalogger build had three microcontrollers that held separate
-roles. This system combines those three into one and eliminates the need for an RTC
-because we assume the builds will be networked when installed.
+The previous datalogger build had three microcontrollers that each held separate roles. 
+This configuration attempts to combine three into one while eliminating the need for an RTC.
+This assumes that all systems will be networked when installed and that the depth of the sensor
+doesn't top the limits of I2C.
 
-Likewise, this system moves from a CSV configuration to a JSON one. Now communication,
-both local and remote, will be standardized.
+Likewise, the configuration file uses JSON, much like the messages to the server, to remmove complexity in communication.
+All messages, both remote and local, now use JSON to remove the need for parsing and writing CSV files.
 
 ## Table of Contents
 
-- [Background](#background)
+- [Parts](#parts)
 - [Install](#install)
 - [Usage](#usage)
 - [Contribute](#contribute)

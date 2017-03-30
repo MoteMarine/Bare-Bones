@@ -5,6 +5,8 @@
 #include <WiFiUdp.h>
 #include <SD.h>
 
+int redPin = 0;
+int purplePin = 2;
 #define SD_PIN 15
 const int timeZone = -4;
 static const char ntpServerName[] = "us.pool.ntp.org";
@@ -31,10 +33,13 @@ struct configs configuration;
 
 void setup() {
   Serial.begin(115200);
+  pinMode(redPin, OUTPUT); 
+  pinMode(purplePin, OUTPUT);
 
-  WiFiMulti.addAP("", "");
+  WiFiMulti.addAP("NSA Surveillance Van", "O3fntvrpDc9GDI1NkIKxH");
   while (WiFiMulti.run() != WL_CONNECTED) {
     Serial.print(".");
+    blink(redPin);
     delay(500);
   }
 
@@ -44,10 +49,12 @@ void setup() {
   setSyncInterval(300);
 
   while (!temperatureSensor.begin()) {
+    blink(redPin);
     Serial.println("Couldn't find MCP9808!");
   }
 
   while (!SD.begin(SD_PIN)) {
+    blink(redPin);
     Serial.println("Card failed, or not present");
   }
 
@@ -62,6 +69,13 @@ void loop() {
     updateReading(&configuration, json);
     cycleOff(configuration.timeout);
   }
+}
+
+void blink(int ledPin){
+  digitalWrite(ledPin, HIGH); 
+  delay(250); 
+  digitalWrite(ledPin, LOW);
+  delay(250); 
 }
 
 float askForTemperature(int numberOfReadings) {
@@ -81,6 +95,7 @@ double readTemperature() {
   delay(250);
   double temperature = temperatureSensor.readTempC();
   temperatureSensor.shutdown_wake(1);
+  blink(purplePin);
   return temperature;
 }
 
@@ -224,3 +239,4 @@ boolean connectedToHost() {
   }
   return true;
 }
+

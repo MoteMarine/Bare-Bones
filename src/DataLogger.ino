@@ -1,20 +1,27 @@
+#include <SparkFun_MS5803_I2C.h>
 #include <ESP8266WiFiMulti.h>
 #include "Adafruit_MCP9808.h"
+#include <ESP8266WiFi.h>
 #include <ArduinoJson.h>
 #include <TimeLib.h>
 #include <WiFiUdp.h>
+#include <Wire.h>
 #include <SD.h>
 
-int redPin = 0;
-int purplePin = 2;
-#define SD_PIN 15
+const int redLED = 0;
+const int purpleLED = 2;
+const int SD_PIN = 15;
 const int timeZone = -4;
+
+float temperature_c, temperature_f;
+double pressure_abs, pressure_relative, altitude_delta, pressure_baseline;
+
 static const char ntpServerName[] = "us.pool.ntp.org";
-Adafruit_MCP9808 temperatureSensor = Adafruit_MCP9808();
 unsigned int localPort = 8888;
 ESP8266WiFiMulti WiFiMulti;
 WiFiClient Client;
 WiFiUDP Udp;
+boolean connected = false;
 
 struct configs {
   int number;
@@ -29,53 +36,71 @@ struct configs {
   String time;
 };
 
+Adafruit_MCP9808 temperatureSensor = Adafruit_MCP9808();
+MS5803 pressureSensor(ADDRESS_HIGH);
 struct configs configuration;
 
 void setup() {
   Serial.begin(115200);
-  pinMode(redPin, OUTPUT); 
-  pinMode(purplePin, OUTPUT);
+  Wire.begin();
+  pressureSensor.reset();
+  pressureSensor.begin();
+  pressure_baseline = pressureSensor.getPressure(ADC_4096);
 
-  WiFiMulti.addAP("NSA Surveillance Van", "O3fntvrpDc9GDI1NkIKxH");
-  while (WiFiMulti.run() != WL_CONNECTED) {
-    Serial.print(".");
-    blink(redPin);
-    delay(500);
+  pinMode(redLED, OUTPUT);
+  pinMode(purpleLED, OUTPUT);
+
+  WiFiMulti.addAP("", "");
+  WiFiMulti.addAP("", "");
+
+  for (int attempts = 0; attempts < 10; attempts++) {
+    if (WiFiMulti.run() != WL_CONNECTED) {
+      Serial.print(".");
+      blink(redLED);
+      delay(1000);
+    } else {
+      connected = true;
+      break;
+    }
   }
 
-  Serial.println("WiFi Connected");
+  if (!connected) {
+    blink(redLED);
+    blink(purpleLED);
+    blink(redLED);
+  }
+
   Udp.begin(localPort);
   setSyncProvider(getNtpTime);
   setSyncInterval(300);
 
   while (!temperatureSensor.begin()) {
-    blink(redPin);
+    blink(redLED);
     Serial.println("Couldn't find MCP9808!");
   }
 
   while (!SD.begin(SD_PIN)) {
-    blink(redPin);
+    blink(redLED);
     Serial.println("Card failed, or not present");
   }
 
   configuration = setConfigVariables();
+  getDateAndTime(&configuration);
+  String temperature = String(askForTemperature(configuration.number));
+  String pressureTemperature = String(read5803Temperature());
+  String pressure = String(readPressure());
+  String json = buildJSON(temperature, pressureTemperature, pressure, &configuration);
+  updateReading(&configuration, json);
+  cycleOff(configuration.timeout);
 }
 
-void loop() {
-  if (connectedToHost()) {
-    getDateAndTime(&configuration);
-    String temperature = String(askForTemperature(configuration.number));
-    String json = buildJSON(temperature, &configuration);
-    updateReading(&configuration, json);
-    cycleOff(configuration.timeout);
-  }
-}
+void loop() {}
 
-void blink(int ledPin){
-  digitalWrite(ledPin, HIGH); 
-  delay(250); 
+void blink(int ledPin) {
+  digitalWrite(ledPin, HIGH);
+  delay(50);
   digitalWrite(ledPin, LOW);
-  delay(250); 
+  delay(50);
 }
 
 float askForTemperature(int numberOfReadings) {
@@ -95,19 +120,30 @@ double readTemperature() {
   delay(250);
   double temperature = temperatureSensor.readTempC();
   temperatureSensor.shutdown_wake(1);
-  blink(purplePin);
+  blink(purpleLED);
   return temperature;
 }
 
-void updateReading(struct configs* configuration, String data) {
+float read5803Temperature() {
+  blink(purpleLED);
+  return pressureSensor.getTemperature(FAHRENHEIT, ADC_512);
+}
+
+double readPressure() {
+  blink(purpleLED);
+  return pressureSensor.getPressure(ADC_4096);
+}
+
+void updateReading(struct configs * configuration, String data) {
   writeDataToDisk(configuration->file, data);
-  Client.print(data);
+  if (connected && connectedToHost()) {
+    Client.print(data);
+  }
 }
 
 void cycleOff(float timeout) {
   Client.stop();
-  delay(timeout * 60 * 1000);
-  //ESP.deepSleep(timeout * 60 * 1000);
+  ESP.deepSleep(timeout * 60 * 1000000);
 }
 
 void writeDataToDisk(String fileName, String dataString) {
@@ -120,29 +156,38 @@ void writeDataToDisk(String fileName, String dataString) {
   }
 }
 
-String buildJSON (String data, struct configs* configuration) {
-  StaticJsonBuffer<375> jsonBuffer;
+String buildJSON (String temp, String pressureTemperature, String pressureBa, struct configs * configuration) {
+  StaticJsonBuffer<475> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
   JsonObject& systems = jsonBuffer.createObject();
-  JsonObject& sensors = jsonBuffer.createObject();
   JsonObject& gps = jsonBuffer.createObject();
+  JsonObject& sensors = jsonBuffer.createObject();
+  JsonObject& temperature = jsonBuffer.createObject();
+  JsonObject& pressure = jsonBuffer.createObject();
 
   systems["ModelNumber"] = configuration->model;
   systems["SerialNumber"] = configuration->serial;
   systems["Location"] = configuration->location;
-  gps["Lat"] = configuration->lat;
-  gps["Lon"] = configuration->lon;
   systems["Date"] = configuration->date;
   systems["Time"] = configuration->time;
-  sensors["Water_Temperature"] = data;
+  gps["Lat"] = configuration->lat;
+  gps["Lon"] = configuration->lon;
+  temperature["Ambient_Temperature"] = temp;
+  pressure["Water_Temperature"] = pressureTemperature;
+  pressure["Water_pressure"] = pressureBa;
+
 
   JsonArray& System = root.createNestedArray("System");
-  JsonArray& GPS = systems.createNestedArray("GPS");
   JsonArray& Sensor = root.createNestedArray("Sensors");
+  JsonArray& GPS = systems.createNestedArray("GPS");
+  JsonArray& Pressure = sensors.createNestedArray("MS5803");
+  JsonArray& Temperature = sensors.createNestedArray("MCP9808");
 
   System.add(systems);
   GPS.add(gps);
   Sensor.add(sensors);
+  Temperature.add(temperature);
+  Pressure.add(pressure);
 
   char json[350];
   root.printTo(json, sizeof(json));
@@ -179,7 +224,7 @@ struct configs setConfigVariables() {
   return currentConfigs;
 }
 
-void getDateAndTime(struct configs* configuration) {
+void getDateAndTime(struct configs * configuration) {
   configuration->file = (String(month()) + "_" + String(year()) + ".txt");
   configuration->date = (String(month()) + "/" + String(day()) + "/" + String(year()));
   configuration->time =  (String(hour()) + ":" + String(minute()) + ":" + String(second()));
@@ -215,7 +260,7 @@ time_t getNtpTime() {
   return 0;
 }
 
-void sendNTPpacket(IPAddress &address) {
+void sendNTPpacket(IPAddress & address) {
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   packetBuffer[0] = 0b11100011;
   packetBuffer[1] = 0;
@@ -231,8 +276,8 @@ void sendNTPpacket(IPAddress &address) {
 }
 
 boolean connectedToHost() {
-  const char * host = "clouddev.mote.org";
-  const uint16_t port = 4001;
+  const char * host = "";
+  const uint16_t port = 5000;
   while (!Client.connect(host, port)) {
     delay(5000);
     Serial.print(".");
